@@ -528,8 +528,7 @@ class TicketCog(commands.Cog):
             member, view_channel=True, send_messages=True
         )
         await itx.response.send_message(f"✅ เพิ่ม {member.mention} เข้า Ticket แล้ว")
-
-    # ── /remove ──────────────────────────────────────────────────────────────
+   # ── /remove ──────────────────────────────────────────────────────────────
     @app_commands.command(name="remove", description="➖ นำคนออกจาก Ticket channel นี้")
     @app_commands.default_permissions(manage_channels=True)
     async def cmd_remove(self, itx: discord.Interaction, member: discord.Member):
@@ -574,4 +573,4 @@ class TicketCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketCog(bot))
-                                      
+             
