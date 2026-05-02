@@ -57,42 +57,7 @@ class Database:
                 PRIMARY KEY (user_id, guild_id)
             );
 
-            -- ระบบรับยศ: กลุ่มหลัก (เช่น "จุดประสงค์", "ประเภทซื้อขาย")
-            CREATE TABLE IF NOT EXISTS role_groups (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id    INTEGER NOT NULL,
-                group_key   TEXT    NOT NULL,   -- internal key เช่น 'purpose', 'trade'
-                label       TEXT    NOT NULL,   -- ชื่อที่แสดง เช่น '🎯 จุดประสงค์'
-                description TEXT,
-                parent_key  TEXT,               -- ถ้าเป็น submenu ให้ใส่ group_key ของ parent
-                trigger_option_key TEXT,        -- option key ของ parent ที่ trigger submenu นี้
-                sort_order  INTEGER DEFAULT 0,
-                UNIQUE(guild_id, group_key)
-            );
-
-            -- ระบบรับยศ: ตัวเลือกแต่ละอัน + role ที่จะให้
-            CREATE TABLE IF NOT EXISTS role_options (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id    INTEGER NOT NULL,
-                group_key   TEXT    NOT NULL,
-                option_key  TEXT    NOT NULL,   -- internal key เช่น 'find_friend'
-                label       TEXT    NOT NULL,   -- ชื่อที่แสดงบนปุ่ม เช่น '👥 หาเพื่อน'
-                emoji       TEXT,
-                role_id     INTEGER,            -- Discord Role ID ที่จะให้/เอาออก
-                has_submenu INTEGER DEFAULT 0,  -- 1 = มี submenu ให้เลือกต่อ
-                sort_order  INTEGER DEFAULT 0,
-                UNIQUE(guild_id, group_key, option_key)
-            );
-
-            -- บันทึก panel message id สำหรับระบบรับยศ (setrole)
-            CREATE TABLE IF NOT EXISTS role_panels (
-                guild_id    INTEGER NOT NULL,
-                channel_id  INTEGER NOT NULL,
-                message_id  INTEGER NOT NULL,
-                PRIMARY KEY (guild_id, channel_id)
-            );
-
-            -- ระบบ RoleReact: panel กดปุ่มรับยศแบบอิสระ
+            -- ระบบ RoleReact: panel กดปุ่มรับยศ (/setrole)
             CREATE TABLE IF NOT EXISTS rr_panels (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id     INTEGER NOT NULL,
@@ -257,87 +222,7 @@ class Database:
                 VALUES (?,?,?)
             """, (user_id, guild_id, datetime.now().isoformat()))
 
-    # ── Role System ──────────────────────────────────────────────────────
-
-    def get_role_groups(self, guild_id: int, parent_key: str | None = None) -> list[dict]:
-        with self.conn() as db:
-            if parent_key is None:
-                rows = db.execute(
-                    "SELECT * FROM role_groups WHERE guild_id=? AND parent_key IS NULL ORDER BY sort_order",
-                    (guild_id,)
-                ).fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM role_groups WHERE guild_id=? AND parent_key=? ORDER BY sort_order",
-                    (guild_id, parent_key)
-                ).fetchall()
-            return [dict(r) for r in rows]
-
-    def get_role_options(self, guild_id: int, group_key: str) -> list[dict]:
-        with self.conn() as db:
-            rows = db.execute(
-                "SELECT * FROM role_options WHERE guild_id=? AND group_key=? ORDER BY sort_order",
-                (guild_id, group_key)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def upsert_role_group(self, guild_id: int, group_key: str, label: str,
-                          description: str = "", parent_key: str | None = None,
-                          trigger_option_key: str | None = None, sort_order: int = 0):
-        with self.conn() as db:
-            db.execute("""
-                INSERT INTO role_groups (guild_id, group_key, label, description, parent_key, trigger_option_key, sort_order)
-                VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(guild_id, group_key) DO UPDATE SET
-                    label=excluded.label,
-                    description=excluded.description,
-                    parent_key=excluded.parent_key,
-                    trigger_option_key=excluded.trigger_option_key,
-                    sort_order=excluded.sort_order
-            """, (guild_id, group_key, label, description, parent_key, trigger_option_key, sort_order))
-
-    def upsert_role_option(self, guild_id: int, group_key: str, option_key: str,
-                           label: str, emoji: str = "", role_id: int | None = None,
-                           has_submenu: bool = False, sort_order: int = 0):
-        with self.conn() as db:
-            db.execute("""
-                INSERT INTO role_options (guild_id, group_key, option_key, label, emoji, role_id, has_submenu, sort_order)
-                VALUES (?,?,?,?,?,?,?,?)
-                ON CONFLICT(guild_id, group_key, option_key) DO UPDATE SET
-                    label=excluded.label,
-                    emoji=excluded.emoji,
-                    role_id=excluded.role_id,
-                    has_submenu=excluded.has_submenu,
-                    sort_order=excluded.sort_order
-            """, (guild_id, group_key, option_key, label, emoji, role_id, int(has_submenu), sort_order))
-
-    def delete_role_option(self, guild_id: int, group_key: str, option_key: str):
-        with self.conn() as db:
-            db.execute(
-                "DELETE FROM role_options WHERE guild_id=? AND group_key=? AND option_key=?",
-                (guild_id, group_key, option_key)
-            )
-
-    def delete_role_group(self, guild_id: int, group_key: str):
-        with self.conn() as db:
-            db.execute("DELETE FROM role_groups WHERE guild_id=? AND group_key=?", (guild_id, group_key))
-            db.execute("DELETE FROM role_options WHERE guild_id=? AND group_key=?", (guild_id, group_key))
-
-    def save_role_panel(self, guild_id: int, channel_id: int, message_id: int):
-        with self.conn() as db:
-            db.execute("""
-                INSERT OR REPLACE INTO role_panels (guild_id, channel_id, message_id)
-                VALUES (?,?,?)
-            """, (guild_id, channel_id, message_id))
-
-    def get_role_panel(self, guild_id: int) -> Optional[dict]:
-        with self.conn() as db:
-            row = db.execute(
-                "SELECT * FROM role_panels WHERE guild_id=?", (guild_id,)
-            ).fetchone()
-            return dict(row) if row else None
-
-    # ── RoleReact System ─────────────────────────────────────────────────
+    # ── RoleReact (/setrole) ─────────────────────────────────────────────
 
     def rr_create_panel(self, guild_id: int, channel_id: int,
                         title: str, description: str,
@@ -411,3 +296,4 @@ class Database:
                 (panel_id, role_id)
             ).fetchone()
             return dict(row) if row else None
+                             
