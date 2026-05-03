@@ -8,13 +8,11 @@ class Database:
         self.path = path
         self._init()
 
-    # ── Connection ──────────────────────────────────────────────────────
     def conn(self):
         c = sqlite3.connect(self.path)
         c.row_factory = sqlite3.Row
         return c
 
-    # ── Schema ──────────────────────────────────────────────────────────
     def _init(self):
         with self.conn() as db:
             db.executescript("""
@@ -34,60 +32,45 @@ class Database:
             );
 
             CREATE TABLE IF NOT EXISTS guild_config (
-                guild_id             INTEGER PRIMARY KEY,
-                support_role_id      INTEGER,
-                admin_role_id        INTEGER,
-                vip_role_id          INTEGER,
-                ticket_category_id   INTEGER,
-                log_channel_id       INTEGER,
+                guild_id              INTEGER PRIMARY KEY,
+                support_role_id       INTEGER,
+                admin_role_id         INTEGER,
+                vip_role_id           INTEGER,
+                ticket_category_id    INTEGER,
+                log_channel_id        INTEGER,
                 transcript_channel_id INTEGER,
-                cooldown_seconds     INTEGER DEFAULT 300,
-                language             TEXT    DEFAULT 'th',
-                panel_message_id     INTEGER
+                cooldown_seconds      INTEGER DEFAULT 300,
+                language              TEXT    DEFAULT 'th',
+                panel_message_id      INTEGER
             );
 
-            -- Migration: add vip_role_id if not exists (safe for existing DBs)
-            CREATE TABLE IF NOT EXISTS _migrations (key TEXT PRIMARY KEY);
-            
-
             CREATE TABLE IF NOT EXISTS cooldowns (
-                user_id    INTEGER,
-                guild_id   INTEGER,
+                user_id     INTEGER,
+                guild_id    INTEGER,
                 last_ticket TEXT,
                 PRIMARY KEY (user_id, guild_id)
             );
 
-            -- ระบบ RoleReact: panel กดปุ่มรับยศ (/setrole)
-            CREATE TABLE IF NOT EXISTS rr_panels (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id     INTEGER NOT NULL,
-                channel_id   INTEGER NOT NULL,
-                message_id   INTEGER,
-                title        TEXT    NOT NULL DEFAULT 'รับยศ',
-                description  TEXT    NOT NULL DEFAULT 'กดปุ่มด้านล่างเพื่อรับยศ',
-                image_url    TEXT,
-                color        INTEGER DEFAULT 5793266,
-                created_at   TEXT    NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS rr_buttons (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                panel_id     INTEGER NOT NULL,
-                guild_id     INTEGER NOT NULL,
-                role_id      INTEGER NOT NULL,
-                label        TEXT    NOT NULL,
-                emoji        TEXT,
-                style        TEXT    DEFAULT 'secondary',
-                sort_order   INTEGER DEFAULT 0
+            -- ระบบรับยศ: ตั้งครั้งเดียว 1 guild = 1 panel
+            CREATE TABLE IF NOT EXISTS setrole (
+                guild_id    INTEGER PRIMARY KEY,
+                channel_id  INTEGER NOT NULL,
+                message_id  INTEGER,
+                role_id     INTEGER NOT NULL,
+                emoji       TEXT    NOT NULL,
+                title       TEXT    NOT NULL,
+                description TEXT    NOT NULL,
+                image_url   TEXT
             );
             """)
-            # Migration: เพิ่ม vip_role_id สำหรับ DB เก่าที่ยังไม่มี column นี้
-            try:
-                db.execute("ALTER TABLE guild_config ADD COLUMN vip_role_id INTEGER")
-            except Exception:
-                pass  # column มีอยู่แล้ว
+            # migration สำหรับ DB เก่า
+            for col in ["vip_role_id"]:
+                try:
+                    db.execute(f"ALTER TABLE guild_config ADD COLUMN {col} INTEGER")
+                except Exception:
+                    pass
 
-    # ── Tickets ─────────────────────────────────────────────────────────
+    # ── Tickets ──────────────────────────────────────────────────────────
     def create_ticket(self, ticket_id, guild_id, channel_id,
                       user_id, category, priority="normal"):
         with self.conn() as db:
@@ -101,7 +84,7 @@ class Database:
     def get_ticket(self, channel_id: int) -> Optional[dict]:
         with self.conn() as db:
             row = db.execute(
-                "SELECT * FROM tickets WHERE channel_id = ?", (channel_id,)
+                "SELECT * FROM tickets WHERE channel_id=?", (channel_id,)
             ).fetchone()
             return dict(row) if row else None
 
@@ -142,7 +125,7 @@ class Database:
                 (rating, channel_id)
             )
 
-    # ── Stats ────────────────────────────────────────────────────────────
+    # ── Stats ─────────────────────────────────────────────────────────────
     def get_stats(self, guild_id: int) -> dict:
         with self.conn() as db:
             row = db.execute("""
@@ -170,7 +153,7 @@ class Database:
             ).fetchone()
             return row[0] if row else 0
 
-    # ── Guild Config ─────────────────────────────────────────────────────
+    # ── Guild Config ──────────────────────────────────────────────────────
     def get_config(self, guild_id: int) -> Optional[dict]:
         with self.conn() as db:
             row = db.execute(
@@ -183,7 +166,6 @@ class Database:
             exists = db.execute(
                 "SELECT 1 FROM guild_config WHERE guild_id=?", (guild_id,)
             ).fetchone()
-
             if exists:
                 sets = ", ".join(f"{k}=?" for k in kwargs)
                 db.execute(
@@ -199,10 +181,9 @@ class Database:
                     list(kwargs.values())
                 )
 
-    # ── Cooldown ─────────────────────────────────────────────────────────
+    # ── Cooldown ──────────────────────────────────────────────────────────
     def check_cooldown(self, user_id: int, guild_id: int,
                        cooldown_secs: int = 300) -> float:
-        """Returns remaining seconds (0 = no cooldown active)."""
         with self.conn() as db:
             row = db.execute(
                 "SELECT last_ticket FROM cooldowns WHERE user_id=? AND guild_id=?",
@@ -222,78 +203,35 @@ class Database:
                 VALUES (?,?,?)
             """, (user_id, guild_id, datetime.now().isoformat()))
 
-    # ── RoleReact (/setrole) ─────────────────────────────────────────────
-
-    def rr_create_panel(self, guild_id: int, channel_id: int,
-                        title: str, description: str,
-                        image_url: str = None, color: int = 5793266) -> int:
+    # ── SetRole ───────────────────────────────────────────────────────────
+    def setrole_save(self, guild_id: int, channel_id: int, role_id: int,
+                     emoji: str, title: str, description: str,
+                     image_url: str = None):
         with self.conn() as db:
-            cur = db.execute("""
-                INSERT INTO rr_panels (guild_id, channel_id, title, description, image_url, color, created_at)
+            db.execute("""
+                INSERT INTO setrole
+                    (guild_id, channel_id, role_id, emoji, title, description, image_url)
                 VALUES (?,?,?,?,?,?,?)
-            """, (guild_id, channel_id, title, description, image_url, color,
-                  datetime.now().isoformat()))
-            return cur.lastrowid
+                ON CONFLICT(guild_id) DO UPDATE SET
+                    channel_id=excluded.channel_id,
+                    role_id=excluded.role_id,
+                    emoji=excluded.emoji,
+                    title=excluded.title,
+                    description=excluded.description,
+                    image_url=excluded.image_url,
+                    message_id=NULL
+            """, (guild_id, channel_id, role_id, emoji, title, description, image_url))
 
-    def rr_update_panel(self, panel_id: int, **kwargs):
+    def setrole_get(self, guild_id: int) -> Optional[dict]:
         with self.conn() as db:
-            sets = ", ".join(f"{k}=?" for k in kwargs)
+            row = db.execute(
+                "SELECT * FROM setrole WHERE guild_id=?", (guild_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def setrole_set_message(self, guild_id: int, message_id: int):
+        with self.conn() as db:
             db.execute(
-                f"UPDATE rr_panels SET {sets} WHERE id=?",
-                (*kwargs.values(), panel_id)
-            )
-
-    def rr_get_panel(self, panel_id: int) -> Optional[dict]:
-        with self.conn() as db:
-            row = db.execute("SELECT * FROM rr_panels WHERE id=?", (panel_id,)).fetchone()
-            return dict(row) if row else None
-
-    def rr_get_panel_by_message(self, message_id: int) -> Optional[dict]:
-        with self.conn() as db:
-            row = db.execute(
-                "SELECT * FROM rr_panels WHERE message_id=?", (message_id,)
-            ).fetchone()
-            return dict(row) if row else None
-
-    def rr_list_panels(self, guild_id: int) -> list[dict]:
-        with self.conn() as db:
-            rows = db.execute(
-                "SELECT * FROM rr_panels WHERE guild_id=? ORDER BY id DESC", (guild_id,)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def rr_delete_panel(self, panel_id: int):
-        with self.conn() as db:
-            db.execute("DELETE FROM rr_buttons WHERE panel_id=?", (panel_id,))
-            db.execute("DELETE FROM rr_panels WHERE id=?", (panel_id,))
-
-    def rr_add_button(self, panel_id: int, guild_id: int, role_id: int,
-                      label: str, emoji: str = None,
-                      style: str = "secondary", sort_order: int = 0) -> int:
-        with self.conn() as db:
-            cur = db.execute("""
-                INSERT INTO rr_buttons (panel_id, guild_id, role_id, label, emoji, style, sort_order)
-                VALUES (?,?,?,?,?,?,?)
-            """, (panel_id, guild_id, role_id, label, emoji, style, sort_order))
-            return cur.lastrowid
-
-    def rr_get_buttons(self, panel_id: int) -> list[dict]:
-        with self.conn() as db:
-            rows = db.execute(
-                "SELECT * FROM rr_buttons WHERE panel_id=? ORDER BY sort_order, id",
-                (panel_id,)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    def rr_remove_button(self, button_id: int):
-        with self.conn() as db:
-            db.execute("DELETE FROM rr_buttons WHERE id=?", (button_id,))
-
-    def rr_get_button_by_role(self, panel_id: int, role_id: int) -> Optional[dict]:
-        with self.conn() as db:
-            row = db.execute(
-                "SELECT * FROM rr_buttons WHERE panel_id=? AND role_id=?",
-                (panel_id, role_id)
-            ).fetchone()
-            return dict(row) if row else None
-                             
+                "UPDATE setrole SET message_id=? WHERE guild_id=?",
+                (message_id, guild_id)
+        )
